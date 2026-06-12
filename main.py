@@ -1,10 +1,10 @@
 import os
-import time
+import asyncio
 from datetime import datetime
 import zoneinfo
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 class TimeBot(commands.Bot):
     def __init__(self):
@@ -13,9 +13,50 @@ class TimeBot(commands.Bot):
         intents.guilds = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
+        # Dictionary to track messages that need updating: {channel_id: timezone_string}
+        self.active_clocks = {}
 
     async def setup_hook(self):
-        pass
+        # Start the background editing loop task
+        self.update_clocks_loop.start()
+
+    # 🔄 BACKGROUND TASK: Edits the text messages automatically when time changes
+    @tasks.loop(seconds=10)
+    async def update_clocks_loop(self):
+        for channel_id, tz_name in list(self.active_clocks.items()):
+            try:
+                channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+                if not channel:
+                    continue
+                
+                # Calculate the exact current local time for their country choice
+                tz = zoneinfo.ZoneInfo(tz_name)
+                now_local = datetime.now(zoneinfo.ZoneInfo("UTC")).astimezone(tz)
+                
+                # Format time precisely as: 3:17 AM (stripping zero padding like 03:17)
+                formatted_time = now_local.strftime("%I:%M %p").lstrip("0")
+                formatted_date = now_local.strftime("%A, %B %d, %Y")
+                
+                # The plain text string that will overwrite the old message text
+                new_content = (
+                    f"⏰ **Developer Clock:** `{formatted_time}`\n"
+                    f"📅 **Date:** {formatted_date}\n"
+                    f"🌍 **Timezone Region:** `{tz_name}`"
+                )
+
+                # Find the pinned profile message inside that specific channel to edit it
+                pins = await channel.pins()
+                if pins:
+                    profile_msg = pins[0]
+                    # Only edit if the text actually changed to save data limits
+                    if profile_msg.content != new_content:
+                        await profile_msg.edit(content=new_content)
+            except Exception as e:
+                print(f"Error editing clock channel {channel_id}: {e}")
+
+    @update_clocks_loop.before_loop
+    async def before_update_clocks_loop(self):
+        await self.wait_until_ready()
 
 bot = TimeBot()
 
@@ -59,13 +100,30 @@ TIMEZONE_MAP = {
 @bot.event
 async def on_ready():
     print("---")
-    print(f"Master Administrator Setup Bot Online as {bot.user}")
+    print(f"Live Message Editing System Online as {bot.user}")
     print("---")
+    
+    # 💾 BOOT CHECK: Automatically scan existing channels so the loop resumes monitoring them if the bot restarts!
     try:
         synced = await bot.tree.sync()
         print(f"Successfully synced {len(synced)} slash commands globally!")
+        
+        for guild in bot.guilds:
+            category = discord.utils.get(guild.categories, name=DASHBOARD_CATEGORY_NAME)
+            if category:
+                for channel in category.text_channels:
+                    if channel.name.startswith("🕒-") and channel.name.endswith("-time"):
+                        pins = await channel.pins()
+                        if pins:
+                            # Read what timezone was assigned from the footer text line
+                            for label, iana in TIMEZONE_MAP.items():
+                                if iana in channel.topic or label in channel.topic:
+                                    bot.active_clocks[channel.id] = iana
+                                    break
+                            if channel.id not in bot.active_clocks:
+                                bot.active_clocks[channel.id] = "Asia/Singapore" # Fallback default
     except Exception as e:
-        print(f"Error syncing commands: {e}")
+        print(f"Error handling boot scan: {e}")
 
 
 def is_master_admin():
@@ -78,7 +136,7 @@ def is_master_admin():
 
 
 # 🛠️ COMMAND 1: Master Administrator Server Build Command
-@bot.tree.command(name="setup-verification", description="[MASTER ADMIN ONLY] Builds the onboarding channels and verification embed panels automatically.")
+@bot.tree.command(name="setup-verification", description="[MASTER ADMIN ONLY] Builds the onboarding channels and verification panels automatically.")
 @is_master_admin()
 async def setup_verification(interaction: discord.Interaction):
     guild = interaction.guild
@@ -153,62 +211,9 @@ async def verify(interaction: discord.Interaction, timezone: str):
         unverified_role: discord.PermissionOverwrite(read_messages=False)
     }
 
+    iana_tz = TIMEZONE_MAP[timezone]
+
+    # Create the text channel and store the timezone configuration directly in the channel metadata topic
     timezone_channel = await guild.create_text_channel(
         name=channel_name,
         category=category,
-        overwrites=overwrites
-    )
-
-    # 🧮 CHEAT-PROOF TIMEZONE CALCULATION
-    # 1. Fetch current global time
-    now_utc = datetime.now(zoneinfo.ZoneInfo("UTC"))
-    # 2. Convert to the specific timezone selected by the developer
-    iana_tz = TIMEZONE_MAP[timezone]
-    target_tz_time = now_utc.astimezone(zoneinfo.ZoneInfo(iana_tz))
-    # 3. Formulate the exact local unix point
-    target_unix = int(target_tz_time.timestamp())
-
-    embed = discord.Embed(
-        title="Developer System Profile",
-        description=f"Active real-time status and operational time matrix tracking for **{user.display_name}**.",
-        color=discord.Color.dark_teal()
-    )
-    embed.set_thumbnail(url=user.display_avatar.url)
-    embed.add_field(name="Developer Name", value=user.mention, inline=True)
-    embed.add_field(name="Assigned Location", value=f"🌍 `{timezone}`", inline=True)
-    
-    # ✨ FIX: Using Discord's active dynamic timestamp format tags.
-    # <t:timestamp:t> shows short time with AM/PM (e.g. 11:09 AM) and updates every 60 seconds automatically.
-    # This prevents the text from locking up or displaying weird milliseconds!
-    embed.add_field(name="Local Current Clock", value=f"📡 <t:{target_unix}:t>", inline=True)
-    embed.add_field(name="Calendar Date", value=f"📅 <t:{target_unix}:F>", inline=False)
-    
-    embed.set_footer(text="Clocks match international standard syncing models automatically.")
-
-    pinned_msg = await timezone_channel.send(embed=embed)
-    await pinned_msg.pin()
-
-    if verified_role:
-        await user.add_roles(verified_role)
-    await user.remove_roles(unverified_role)
-
-    await interaction.followup.send(f"🎉 Onboarding complete! Profile entry listed under: {timezone_channel.mention}", ephemeral=True)
-
-
-@verify.autocomplete("timezone")
-async def verify_autocomplete(interaction: discord.Interaction, current: str):
-    choices = []
-    for display_label in TIMEZONE_MAP.keys():
-        if current.lower() in display_label.lower():
-            choices.append(app_commands.Choice(name=display_label, value=display_label))
-    return choices[:25]
-
-
-@setup_verification.error
-async def setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.errors.MissingRole):
-        await interaction.response.send_message(f"❌ Access Denied. You must have the **{ADMIN_ROLE_NAME}** role to use this command.", ephemeral=True)
-
-
-TOKEN = os.getenv("DISCORD_TOKEN")
-bot.run(TOKEN)
