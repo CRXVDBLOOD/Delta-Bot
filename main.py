@@ -22,6 +22,7 @@ bot = TimeBot()
 # --- CONFIGURATION (Ensure these match your exact server setup) ---
 UNVERIFIED_ROLE_NAME = "unverifiedeveloper"
 VERIFIED_ROLE_NAME = "developer"
+ADMIN_ROLE_NAME = "Master Administrator"  # The specific role allowed to run setup
 DASHBOARD_CATEGORY_NAME = "Developer Timezones"
 VERIFY_CHANNEL_NAME = "verify-here"
 
@@ -58,30 +59,36 @@ TIMEZONE_MAP = {
 @bot.event
 async def on_ready():
     print("---")
-    print(f"Owner Setup & Onboarding Bot Online as {bot.user}")
+    print(f"Master Administrator Setup Bot Online as {bot.user}")
     print("---")
     try:
         synced = await bot.tree.sync()
-        print(f"Successfully synced {len(synced)} slash commands!")
+        print(f"Successfully synced {len(synced)} slash commands globally!")
     except Exception as e:
         print(f"Error syncing commands: {e}")
 
 
-# 🛠️ COMMAND 1: Owner-Only Server Build Command
-@bot.tree.command(name="setup-verification", description="[OWNER ONLY] Builds the onboarding channels and verification embed panels automatically.")
+# Custom permission check function for Master Administrator role
+def is_master_admin():
+    def predicate(interaction: discord.Interaction) -> bool:
+        # Check if user has a role named exactly "Master Administrator"
+        admin_role = discord.utils.get(interaction.user.roles, name=ADMIN_ROLE_NAME)
+        if admin_role is not None:
+            return True
+        raise app_commands.errors.MissingRole(ADMIN_ROLE_NAME)
+    return app_commands.checks.check(predicate)
+
+
+# 🛠️ COMMAND 1: Master Administrator Server Build Command
+@bot.tree.command(name="setup-verification", description="[MASTER ADMIN ONLY] Builds the onboarding channels and verification embed panels automatically.")
+@is_master_admin()
 async def setup_verification(interaction: discord.Interaction):
     guild = interaction.guild
-    
-    # Strictly enforce that ONLY the absolute server creator/owner can execute this
-    if interaction.user.id != guild.owner_id:
-        await interaction.response.send_message("❌ Access Denied. Only the **Server Owner** can execute this master setup command.", ephemeral=True)
-        return
-
     await interaction.response.defer(ephemeral=True)
 
     unverified_role = discord.utils.get(guild.roles, name=UNVERIFIED_ROLE_NAME)
     if not unverified_role:
-        await interaction.followup.send(f"❌ Error: Could not find a role named `{UNVERIFIED_ROLE_NAME}` inside your server settings. Please make sure you spell it exactly right first!")
+        await interaction.followup.send(f"❌ Error: Could not find a role named `{UNVERIFIED_ROLE_NAME}` in your server. Please create it first!", ephemeral=True)
         return
 
     # 1. Automatically generate the Dashboard Folder Category if missing
@@ -94,16 +101,17 @@ async def setup_verification(interaction: discord.Interaction):
     if not verify_channel:
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            unverified_role: discord.PermissionOverwrite(view_channel=True, send_messages=False) # Block manual typing, they must use the slash interaction dropdown
+            unverified_role: discord.PermissionOverwrite(view_channel=True, send_messages=False)
         }
         verify_channel = await guild.create_text_channel(
             name=VERIFY_CHANNEL_NAME,
+            category=category,
             overwrites=overwrites
         )
 
     # 3. Deploy the customized welcome embed instructions you specified
     embed = discord.Embed(
-        title="# Hello this is an developer verification channel",
+        title="Hello this is an developer verification channel",
         description=(
             "Put your country or time region in this embed so everyone can track your availability "
             "and what time is it for you you can also see everyones time region.\n\n"
@@ -111,11 +119,11 @@ async def setup_verification(interaction: discord.Interaction):
         ),
         color=discord.Color.blue()
     )
-    embed.add_field(name="How to verify:", value="Type `/verify` in your chat box, click the command, select your global location from the autocompletion dropdown menu, and press Enter!", inline=False)
+    embed.add_field(name="How to verify:", value="Type `/verify` in your chat box, click the command, select your global location from the dropdown menu, and press Enter!", inline=False)
     embed.set_footer(text="Automated Developer Gatekeeper System")
 
     await verify_channel.send(embed=embed)
-    await interaction.followup.send(f"✅ Onboarding framework deployed successfully! The gate channel is now live at: {verify_channel.mention}")
+    await interaction.followup.send(f"✅ Onboarding framework deployed successfully! The gate channel is live at: {verify_channel.mention}", ephemeral=True)
 
 
 # 📄 COMMAND 2: Public Interactive Verification Command
@@ -133,7 +141,7 @@ async def verify(interaction: discord.Interaction, timezone: str):
         return
 
     if timezone not in TIMEZONE_MAP:
-        await interaction.response.send_message("❌ Configuration error. Please select an option directly from the auto-populating drop-down choice list!", ephemeral=True)
+        await interaction.response.send_message("❌ Configuration error. Please select an option directly from the drop-down choice list!", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
@@ -184,7 +192,8 @@ async def verify(interaction: discord.Interaction, timezone: str):
         await user.add_roles(verified_role)
     await user.remove_roles(unverified_role)
 
-    await interaction.followup.send(f"🎉 Onboarding complete! Profile entry listed under: {timezone_channel.mention}")
+    await interaction.followup.send(f"🎉 Onboarding complete! Profile entry listed under: {timezone_channel.mention}", ephemeral=True)
+
 
 @verify.autocomplete("timezone")
 async def verify_autocomplete(interaction: discord.Interaction, current: str):
@@ -193,6 +202,14 @@ async def verify_autocomplete(interaction: discord.Interaction, current: str):
         if current.lower() in display_label.lower():
             choices.append(app_commands.Choice(name=display_label, value=display_label))
     return choices[:25]
+
+
+# Error handler specifically looking for users missing the Master Administrator role
+@setup_verification.error
+async def setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.errors.MissingRole):
+        await interaction.response.send_message(f"❌ Access Denied. You must have the **{ADMIN_ROLE_NAME}** role to use this command.", ephemeral=True)
+
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
