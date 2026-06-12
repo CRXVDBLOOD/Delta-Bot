@@ -22,7 +22,7 @@ bot = TimeBot()
 # --- CONFIGURATION (Ensure these match your exact server setup) ---
 UNVERIFIED_ROLE_NAME = "unverifiedeveloper"
 VERIFIED_ROLE_NAME = "developer"
-ADMIN_ROLE_NAME = "Master Administrator"  # The specific role allowed to run setup
+ADMIN_ROLE_NAME = "Master Administrator"
 DASHBOARD_CATEGORY_NAME = "Developer Timezones"
 VERIFY_CHANNEL_NAME = "verify-here"
 
@@ -68,10 +68,8 @@ async def on_ready():
         print(f"Error syncing commands: {e}")
 
 
-# Custom permission check function for Master Administrator role
 def is_master_admin():
     def predicate(interaction: discord.Interaction) -> bool:
-        # Check if user has a role named exactly "Master Administrator"
         admin_role = discord.utils.get(interaction.user.roles, name=ADMIN_ROLE_NAME)
         if admin_role is not None:
             return True
@@ -91,12 +89,10 @@ async def setup_verification(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Error: Could not find a role named `{UNVERIFIED_ROLE_NAME}` in your server. Please create it first!", ephemeral=True)
         return
 
-    # 1. Automatically generate the Dashboard Folder Category if missing
     category = discord.utils.get(guild.categories, name=DASHBOARD_CATEGORY_NAME)
     if not category:
         category = await guild.create_category(DASHBOARD_CATEGORY_NAME)
 
-    # 2. Automatically generate the entry Verification Channel with lock-down rules
     verify_channel = discord.utils.get(guild.text_channels, name=VERIFY_CHANNEL_NAME)
     if not verify_channel:
         overwrites = {
@@ -109,7 +105,6 @@ async def setup_verification(interaction: discord.Interaction):
             overwrites=overwrites
         )
 
-    # 3. Deploy the customized welcome embed instructions you specified
     embed = discord.Embed(
         title="Hello this is an developer verification channel",
         description=(
@@ -146,13 +141,6 @@ async def verify(interaction: discord.Interaction, timezone: str):
 
     await interaction.response.defer(ephemeral=True)
 
-    iana_timezone_str = TIMEZONE_MAP[timezone]
-    tz_target = zoneinfo.ZoneInfo(iana_timezone_str)
-
-    now_utc = datetime.now(zoneinfo.ZoneInfo("UTC"))
-    now_target = now_utc.astimezone(tz_target)
-    offset_seconds = now_target.utcoffset().total_seconds()
-
     category = discord.utils.get(guild.categories, name=DASHBOARD_CATEGORY_NAME)
     if not category:
         category = await guild.create_category(DASHBOARD_CATEGORY_NAME)
@@ -171,8 +159,15 @@ async def verify(interaction: discord.Interaction, timezone: str):
         overwrites=overwrites
     )
 
-    live_unix = int(time.time()) + int(offset_seconds)
-    
+    # 🧮 CHEAT-PROOF TIMEZONE CALCULATION
+    # 1. Fetch current global time
+    now_utc = datetime.now(zoneinfo.ZoneInfo("UTC"))
+    # 2. Convert to the specific timezone selected by the developer
+    iana_tz = TIMEZONE_MAP[timezone]
+    target_tz_time = now_utc.astimezone(zoneinfo.ZoneInfo(iana_tz))
+    # 3. Formulate the exact local unix point
+    target_unix = int(target_tz_time.timestamp())
+
     embed = discord.Embed(
         title="Developer System Profile",
         description=f"Active real-time status and operational time matrix tracking for **{user.display_name}**.",
@@ -181,8 +176,13 @@ async def verify(interaction: discord.Interaction, timezone: str):
     embed.set_thumbnail(url=user.display_avatar.url)
     embed.add_field(name="Developer Name", value=user.mention, inline=True)
     embed.add_field(name="Assigned Location", value=f"🌍 `{timezone}`", inline=True)
-    embed.add_field(name="Local Current Clock", value=f"📡 <t:{live_unix}:T>", inline=True)
-    embed.add_field(name="Calendar Date", value=f"📅 <t:{live_unix}:d>", inline=True)
+    
+    # ✨ FIX: Using Discord's active dynamic timestamp format tags.
+    # <t:timestamp:t> shows short time with AM/PM (e.g. 11:09 AM) and updates every 60 seconds automatically.
+    # This prevents the text from locking up or displaying weird milliseconds!
+    embed.add_field(name="Local Current Clock", value=f"📡 <t:{target_unix}:t>", inline=True)
+    embed.add_field(name="Calendar Date", value=f"📅 <t:{target_unix}:F>", inline=False)
+    
     embed.set_footer(text="Clocks match international standard syncing models automatically.")
 
     pinned_msg = await timezone_channel.send(embed=embed)
@@ -204,7 +204,6 @@ async def verify_autocomplete(interaction: discord.Interaction, current: str):
     return choices[:25]
 
 
-# Error handler specifically looking for users missing the Master Administrator role
 @setup_verification.error
 async def setup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.errors.MissingRole):
