@@ -13,7 +13,7 @@ class TimeBot(commands.Bot):
         intents.guilds = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
-        # Dictionary to track messages that need updating: {channel_id: timezone_string}
+        # Dictionary tracking active users: {user_id: timezone_string}
         self.active_clocks = {}
 
     async def setup_hook(self):
@@ -27,88 +27,52 @@ class TimeBot(commands.Bot):
         # Start the background editing loop task
         self.update_clocks_loop.start()
 
-    # 🔄 BACKGROUND TASK: Edits the text messages automatically when time changes
-    @tasks.loop(seconds=10)
+    # 🔄 BACKGROUND TASK: Deletes old embeds and re-sends fresh entries every 1 minute
+    @tasks.loop(minutes=1)
     async def update_clocks_loop(self):
-        for channel_id, tz_name in list(self.active_clocks.items()):
+        for guild in self.guilds:
             try:
-                channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
-                if not channel:
+                channel = discord.utils.get(guild.text_channels, name=CLOCK_CHANNEL_NAME)
+                if not channel or not self.active_clocks:
                     continue
-                
-                # Calculate the exact current local time for their country choice
-                tz = zoneinfo.ZoneInfo(tz_name)
-                now_local = datetime.now(zoneinfo.ZoneInfo("UTC")).astimezone(tz)
-                
-                # Format time precisely as: 3:17 AM (stripping zero padding like 03:17)
-                formatted_time = now_local.strftime("%I:%M %p").lstrip("0")
-                formatted_date = now_local.strftime("%A, %B %d, %Y")
-                
-                # 🎮 MINECRAFT ANSI SKY ENGINE
-                hour = now_local.hour
-                RESET = "\u001b[0m"
-                DAY_BG = "\u001b[46m"     # Cyan background sky
-                NIGHT_BG = "\u001b[40m"   # Black background space
-                SUN_COLOR = "\u001b[43m"  # Yellow block sun
-                MOON_COLOR = "\u001b[47m" # White block moon
-                GRASS_DAY = "\u001b[42m"  # Green grass horizon
-                GRASS_NIGHT = "\u001b[45m"# Purple horizon line
-                
-                slots_count = 12          # Grid layout width
-                
-                if 6 <= hour < 18:
-                    # ☀️ Day Sky Mechanics
-                    progress = (hour - 6) / 11
-                    pos = int(progress * (slots_count - 1))
+
+                # 🗑️ CLEAN SLATE: Purge old messages completely to refresh every minute
+                await channel.purge(limit=100)
+
+                # Post a separate, clean card layout for each individual registered developer
+                for user_id, tz_name in list(self.active_clocks.items()):
+                    member = guild.get_member(user_id) or await guild.fetch_member(user_id)
+                    if not member:
+                        continue
+
+                    # Calculate local time
+                    tz = zoneinfo.ZoneInfo(tz_name)
+                    now_local = datetime.now(zoneinfo.ZoneInfo("UTC")).astimezone(tz)
                     
-                    # Determine altitude (Sun peaks between 9 AM and 2 PM)
-                    if 9 <= hour <= 14:
-                        row1_blocks = [SUN_COLOR if i == pos else DAY_BG for i in range(slots_count)]
-                        row2_blocks = [DAY_BG for i in range(slots_count)]
-                    else:
-                        row1_blocks = [DAY_BG for i in range(slots_count)]
-                        row2_blocks = [SUN_COLOR if i == pos else DAY_BG for i in range(slots_count)]
-                        
-                    r1 = "".join([color + "  " for color in row1_blocks]) + RESET
-                    r2 = "".join([color + "  " for color in row2_blocks]) + RESET
-                    r3 = GRASS_DAY + "  " * slots_count + RESET
-                else:
-                    # 🌙 Night Sky Mechanics
-                    adjusted_hour = hour - 18 if hour >= 18 else hour + 6
-                    progress = adjusted_hour / 11
-                    pos = int(progress * (slots_count - 1))
+                    formatted_time = now_local.strftime("%I:%M %p").lstrip("0")
+                    formatted_date = now_local.strftime("%A, %B %d, %Y")
+
+                    # Clean color shift based on day/night hours without any text or emoji clutter
+                    embed_color = discord.Color.blue() if 6 <= now_local.hour < 18 else discord.Color.dark_purple()
+
+                    # Build high-fidelity profile card (All time/orbit emojis removed)
+                    embed = discord.Embed(
+                        title=f"👤 {member.display_name}'s Clock Panel",
+                        color=embed_color
+                    )
                     
-                    # Determine altitude (Moon peaks between 9 PM and 2 AM)
-                    if 21 <= hour or hour <= 2:
-                        row1_blocks = [MOON_COLOR if i == pos else NIGHT_BG for i in range(slots_count)]
-                        row2_blocks = [NIGHT_BG for i in range(slots_count)]
-                    else:
-                        row1_blocks = [NIGHT_BG for i in range(slots_count)]
-                        row2_blocks = [MOON_COLOR if i == pos else NIGHT_BG for i in range(slots_count)]
-                        
-                    r1 = "".join([color + "  " for color in row1_blocks]) + RESET
-                    r2 = "".join([color + "  " for color in row2_blocks]) + RESET
-                    r3 = GRASS_NIGHT + "  " * slots_count + RESET
+                    embed.add_field(name="Local Time", value=f"`{formatted_time}`", inline=True)
+                    embed.add_field(name="Date", value=f"`{formatted_date}`", inline=True)
+                    embed.add_field(name="Region Mapping", value=f"`{tz_name}`", inline=False)
+                    
+                    # 🖼️ USER ICON: Pulls the developer's live profile picture icon directly into the card
+                    embed.set_thumbnail(url=member.display_avatar.url)
+                    embed.set_footer(text="🔄 Auto-refreshed via Delete & Re-send cycle")
 
-                sky_art = f"```ansi\n{r1}\n{r2}\n{r3}\n```"
+                    await channel.send(embed=embed)
 
-                # The plain text string that will overwrite the old message text
-                new_content = (
-                    f"{sky_art}\n"
-                    f"⏰ **Developer Clock:** `{formatted_time}`\n"
-                    f"📅 **Date:** {formatted_date}\n"
-                    f"🌍 **Timezone Region:** `{tz_name}`"
-                )
-
-                # Find the pinned profile message inside that specific channel to edit it
-                pins = await channel.pins()
-                if pins:
-                    profile_msg = pins[0]
-                    # Only edit if the text actually changed to save data limits
-                    if profile_msg.content != new_content:
-                        await profile_msg.edit(content=new_content)
             except Exception as e:
-                print(f"Error editing clock channel {channel_id}: {e}")
+                print(f"Error executing delete and re-send clock cycle loop: {e}")
 
     @update_clocks_loop.before_loop
     async def before_update_clocks_loop(self):
@@ -120,8 +84,8 @@ bot = TimeBot()
 UNVERIFIED_ROLE_NAME = "Unverified Developer"
 VERIFIED_ROLE_NAME = "Developer"
 ADMIN_ROLE_NAME = "Master Administrator"
-DASHBOARD_CATEGORY_NAME = "Developer Timezones"
 VERIFY_CHANNEL_NAME = "verify-here"
+CLOCK_CHANNEL_NAME = "developer-clocks"  # The one and only unified dashboard channel
 
 # --- EXTENDED GLOBAL TIMEZONE DATABASE ---
 TIMEZONE_MAP = {
@@ -159,24 +123,20 @@ async def on_ready():
     print(f"Live Message Editing System Online as {bot.user}")
     print("---")
     
-    # 💾 BOOT CHECK: Automatically scan existing channels so the loop resumes monitoring them if the bot restarts!
+    # 💾 BOOT CHECK: Re-read tracking definitions hidden cleanly inside the channel topic metadata
     try:
         for guild in bot.guilds:
-            category = discord.utils.get(guild.categories, name=DASHBOARD_CATEGORY_NAME)
-            if category:
-                for channel in category.text_channels:
-                    if channel.name.startswith("🕒-") and channel.name.endswith("-time"):
-                        pins = await channel.pins()
-                        if pins:
-                            # Read what timezone was assigned from the channel topic
-                            for label, iana in TIMEZONE_MAP.items():
-                                if channel.topic and (iana in channel.topic or label in channel.topic):
-                                    bot.active_clocks[channel.id] = iana
-                                    break
-                            if channel.id not in bot.active_clocks:
-                                bot.active_clocks[channel.id] = "Asia/Singapore" # Fallback default
+            channel = discord.utils.get(guild.text_channels, name=CLOCK_CHANNEL_NAME)
+            if channel and channel.topic and "DATA:" in channel.topic:
+                raw_data = channel.topic.split("DATA:")[1].strip()
+                if raw_data:
+                    for item in raw_data.split(","):
+                        if ":" in item:
+                            uid_str, tz = item.split(":", 1)
+                            bot.active_clocks[int(uid_str)] = tz
+        print(f"💾 Restored tracking definitions for {len(bot.active_clocks)} active developers.")
     except Exception as e:
-        print(f"Error handling boot scan: {e}")
+        print(f"Error handling boot scan string parsing: {e}")
 
 
 def is_master_admin():
@@ -189,38 +149,40 @@ def is_master_admin():
 
 
 # 🛠️ COMMAND 1: Master Administrator Server Build Command
-@bot.tree.command(name="setup-verification", description="[MASTER ADMIN ONLY] Builds the onboarding channels and verification panels automatically.")
+@bot.tree.command(name="setup-verification", description="[MASTER ADMIN ONLY] Builds onboarding and the single clock channel.")
 @is_master_admin()
 async def setup_verification(interaction: discord.Interaction):
     guild = interaction.guild
     await interaction.response.defer(ephemeral=True)
 
     unverified_role = discord.utils.get(guild.roles, name=UNVERIFIED_ROLE_NAME)
-    if not unverified_role:
-        await interaction.followup.send(f"❌ Error: Could not find a role named `{UNVERIFIED_ROLE_NAME}` in your server. Please create it first!", ephemeral=True)
+    verified_role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
+    if not unverified_role or not verified_role:
+        await interaction.followup.send(f"❌ Error: Could not find roles named `{UNVERIFIED_ROLE_NAME}` or `{VERIFIED_ROLE_NAME}`.", ephemeral=True)
         return
 
-    category = discord.utils.get(guild.categories, name=DASHBOARD_CATEGORY_NAME)
-    if not category:
-        category = await guild.create_category(DASHBOARD_CATEGORY_NAME)
-
+    # Create Gateway Verification Channel
     verify_channel = discord.utils.get(guild.text_channels, name=VERIFY_CHANNEL_NAME)
     if not verify_channel:
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             unverified_role: discord.PermissionOverwrite(view_channel=True, send_messages=False)
         }
-        verify_channel = await guild.create_text_channel(
-            name=VERIFY_CHANNEL_NAME,
-            category=category,
-            overwrites=overwrites
-        )
+        verify_channel = await guild.create_text_channel(name=VERIFY_CHANNEL_NAME, overwrites=overwrites)
     else:
-        # 🔄 REPLACE EMBEDS: If verification channel already exists, clear old bot posts so they don't stack up
         try:
-            await verify_channel.purge(limit=50, check=lambda m: m.author == bot.user)
+            await verify_channel.purge(limit=10, check=lambda m: m.author == bot.user)
         except Exception:
             pass
+
+    # Create Singular Clock Channel
+    clock_channel = discord.utils.get(guild.text_channels, name=CLOCK_CHANNEL_NAME)
+    if not clock_channel:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            verified_role: discord.PermissionOverwrite(view_channel=True, send_messages=False)
+        }
+        await guild.create_text_channel(name=CLOCK_CHANNEL_NAME, overwrites=overwrites, topic="Live Developer Dashboard | DATA:")
 
     embed = discord.Embed(
         title="Hello this is an developer verification channel",
@@ -232,10 +194,9 @@ async def setup_verification(interaction: discord.Interaction):
         color=discord.Color.blue()
     )
     embed.add_field(name="How to verify:", value="Type `/verify` in your chat box, click the command, select your global location from the menu, and press Enter!", inline=False)
-    embed.set_footer(text="Automated Developer Gatekeeper System")
-
+    
     await verify_channel.send(embed=embed)
-    await interaction.followup.send(f"✅ Onboarding framework deployed successfully! The gate channel is live at: {verify_channel.mention}", ephemeral=True)
+    await interaction.followup.send(f"✅ Onboarding framework deployed! Verification gate: {verify_channel.mention}", ephemeral=True)
 
 
 # 🔍 AUTOCOMPLETE AUTO-SUGGEST LOGIC
@@ -259,10 +220,7 @@ async def verify(interaction: discord.Interaction, timezone: str):
     verified_role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
 
     if not unverified_role or not verified_role:
-        await interaction.response.send_message(
-            f"❌ Server configuration error. Make sure both `{UNVERIFIED_ROLE_NAME}` and `{VERIFIED_ROLE_NAME}` exist in your server settings exactly as written.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ Server configuration error with role names.", ephemeral=True)
         return
 
     if unverified_role not in member.roles:
@@ -270,73 +228,38 @@ async def verify(interaction: discord.Interaction, timezone: str):
         return
 
     if timezone not in TIMEZONE_MAP:
-        await interaction.response.send_message("❌ Configuration error. Please select an option directly from the auto-suggested list!", ephemeral=True)
+        await interaction.response.send_message("❌ Please select an option directly from the auto-suggested list!", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
 
-    category = discord.utils.get(guild.categories, name=DASHBOARD_CATEGORY_NAME)
-    if not category:
-        category = await guild.create_category(DASHBOARD_CATEGORY_NAME)
-
-    clean_name = member.name.lower().replace(" ", "-")
-    channel_name = f"🕒-{clean_name}-time"
-    
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        verified_role: discord.PermissionOverwrite(view_channel=True, send_messages=False)
-    }
+    clock_channel = discord.utils.get(guild.text_channels, name=CLOCK_CHANNEL_NAME)
+    if not clock_channel:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            verified_role: discord.PermissionOverwrite(view_channel=True, send_messages=False)
+        }
+        clock_channel = await guild.create_text_channel(name=CLOCK_CHANNEL_NAME, overwrites=overwrites, topic="Live Developer Dashboard | DATA:")
 
     iana_tz = TIMEZONE_MAP[timezone]
-
-    # 🔍 REPLACE/REUSE EXISTING CHANNEL CHECK
-    timezone_channel = discord.utils.get(category.text_channels, name=channel_name)
     
-    if timezone_channel:
-        # Channel exists! Instead of creating a new one, update the settings and reuse it
-        await timezone_channel.edit(
-            category=category,
-            overwrites=overwrites,
-            topic=f"Timezone: {iana_tz} | Assigned User: {member.name}"
-        )
-        # Update the text inside the pinned message to signal the swap
-        pins = await timezone_channel.pins()
-        if pins:
-            await pins[0].edit(content=f"⏳ Re-syncing clock engine to `{timezone}`...")
-        else:
-            initial_msg = await timezone_channel.send(f"⏳ Syncing clock for {member.mention}...")
-            await initial_msg.pin()
-    else:
-        # Create a fresh channel if they don't have one yet
-        timezone_channel = await guild.create_text_channel(
-            name=channel_name,
-            category=category,
-            overwrites=overwrites,
-            topic=f"Timezone: {iana_tz} | Assigned User: {member.name}"
-        )
-        initial_msg = await timezone_channel.send(f"⏳ Syncing clock for {member.mention}...")
-        await initial_msg.pin()
+    # Update local memory map tracking configuration
+    bot.active_clocks[member.id] = iana_tz
 
-    # Re-map the tracking runtime directly to the channel ID (updates the background task target)
-    bot.active_clocks[timezone_channel.id] = iana_tz
+    # Save tracking data map string back to channel topic metadata for reboots
+    data_segments = [f"{uid}:{tz}" for uid, tz in bot.active_clocks.items()]
+    await clock_channel.edit(topic=f"Live Developer Dashboard | DATA: {','.join(data_segments)}")
 
-    # 🔄 ROLE UPDATE MECHANICS
+    # Role processing assignments 
     try:
         if unverified_role in member.roles:
             await member.remove_roles(unverified_role)
         await member.add_roles(verified_role)
     except discord.Forbidden:
-        print(f"❌ Error: Bot hierarchy profile is below the target roles. Drag the bot's role HIGHER in your server integration settings!")
-        await interaction.followup.send(
-            "⚠️ Settings updated, but I couldn't update your roles. Please contact an Administrator to adjust my role position hierarchy!",
-            ephemeral=True
-        )
+        await interaction.followup.send("⚠️ Saved preferences, but I couldn't change your roles due to Discord server role hierarchy positions.", ephemeral=True)
         return
 
-    await interaction.followup.send(
-        f"✅ Verification processed! Your personal clock dashboard has been mapped here: {timezone_channel.mention}", 
-        ephemeral=True
-    )
+    await interaction.followup.send(f"✅ Verification successful! Your local clock profile is now processing on the panel here: {clock_channel.mention}", ephemeral=True)
 
 
 # --- BOT EXECUTION ---
