@@ -68,8 +68,8 @@ class TimeBot(commands.Bot):
 bot = TimeBot()
 
 # --- CONFIGURATION (Ensure these match your exact server setup case-sensitively!) ---
-UNVERIFIED_ROLE_NAME = "unverifiedeveloper"
-VERIFIED_ROLE_NAME = "developer"
+UNVERIFIED_ROLE_NAME = "Unverified Developer"
+VERIFIED_ROLE_NAME = "Developer"
 ADMIN_ROLE_NAME = "Master Administrator"
 DASHBOARD_CATEGORY_NAME = "Developer Timezones"
 VERIFY_CHANNEL_NAME = "verify-here"
