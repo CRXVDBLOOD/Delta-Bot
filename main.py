@@ -27,7 +27,7 @@ class TimeBot(commands.Bot):
         # Start the background editing loop task
         self.update_clocks_loop.start()
 
-    # 🔄 BACKGROUND TASK: Deletes old embeds and re-sends fresh entries every 1 minute
+    # 🔄 BACKGROUND TASK: Edits existing embeds in-place every 1 minute
     @tasks.loop(minutes=1)
     async def update_clocks_loop(self):
         for guild in self.guilds:
@@ -36,10 +36,13 @@ class TimeBot(commands.Bot):
                 if not channel or not self.active_clocks:
                     continue
 
-                # 🗑️ CLEAN SLATE: Purge old messages completely to refresh every minute
-                await channel.purge(limit=100)
+                # Fetch recent bot messages from the channel to find old embeds to modify
+                existing_messages = [
+                    msg async for msg in channel.history(limit=100) 
+                    if msg.author == self.user and msg.embeds
+                ]
 
-                # Post a separate, clean card layout for each individual registered developer
+                # Update or build an embed for each registered developer
                 for user_id, tz_name in list(self.active_clocks.items()):
                     member = guild.get_member(user_id) or await guild.fetch_member(user_id)
                     if not member:
@@ -52,10 +55,10 @@ class TimeBot(commands.Bot):
                     formatted_time = now_local.strftime("%I:%M %p").lstrip("0")
                     formatted_date = now_local.strftime("%A, %B %d, %Y")
 
-                    # Clean color shift based on day/night hours without any text or emoji clutter
+                    # Dynamic color adjustment based on day/night cycles without visual clutter
                     embed_color = discord.Color.blue() if 6 <= now_local.hour < 18 else discord.Color.dark_purple()
 
-                    # Build high-fidelity profile card (All time/orbit emojis removed)
+                    # Build clean profile card layout
                     embed = discord.Embed(
                         title=f"👤 {member.display_name}'s Clock Panel",
                         color=embed_color
@@ -65,14 +68,36 @@ class TimeBot(commands.Bot):
                     embed.add_field(name="Date", value=f"`{formatted_date}`", inline=True)
                     embed.add_field(name="Region Mapping", value=f"`{tz_name}`", inline=False)
                     
-                    # 🖼️ USER ICON: Pulls the developer's live profile picture icon directly into the card
+                    # 🖼️ LIVE PFP SYNC: Always grabs their current profile picture link directly from Discord
                     embed.set_thumbnail(url=member.display_avatar.url)
-                    embed.set_footer(text="🔄 Auto-refreshed via Delete & Re-send cycle")
+                    
+                    # Invisible ID string mapping used as our primary targeting reference key
+                    embed.set_footer(text=f"Developer ID: {user_id}")
 
-                    await channel.send(embed=embed)
+                    # Find if a message already exists for this specific developer
+                    target_msg = None
+                    for msg in existing_messages:
+                        if msg.embeds[0].footer and msg.embeds[0].footer.text == f"Developer ID: {user_id}":
+                            target_msg = msg
+                            break
+
+                    if target_msg:
+                        # Only execute an edit request if data updates to save rate limits
+                        if (target_msg.embeds[0].fields[0].value != f"`{formatted_time}`" or 
+                            target_msg.embeds[0].thumbnail.url != member.display_avatar.url):
+                            await target_msg.edit(embed=embed)
+                    else:
+                        # Deploy a fresh tracking card if they don't have one in the channel yet
+                        await channel.send(embed=embed)
+
+                # Optional Cleanup: Remove any loose panels whose owners are no longer tracked
+                tracked_footers = [f"Developer ID: {uid}" for uid in self.active_clocks.keys()]
+                for msg in existing_messages:
+                    if msg.embeds[0].footer and msg.embeds[0].footer.text not in tracked_footers:
+                        await msg.delete()
 
             except Exception as e:
-                print(f"Error executing delete and re-send clock cycle loop: {e}")
+                print(f"Error executing embed modification cycle loop: {e}")
 
     @update_clocks_loop.before_loop
     async def before_update_clocks_loop(self):
@@ -85,7 +110,7 @@ UNVERIFIED_ROLE_NAME = "Unverified Developer"
 VERIFIED_ROLE_NAME = "Developer"
 ADMIN_ROLE_NAME = "Master Administrator"
 VERIFY_CHANNEL_NAME = "verify-here"
-CLOCK_CHANNEL_NAME = "developer-clocks"  # The one and only unified dashboard channel
+CLOCK_CHANNEL_NAME = "developer-clocks"  # Shared text dashboard location
 
 # --- EXTENDED GLOBAL TIMEZONE DATABASE ---
 TIMEZONE_MAP = {
