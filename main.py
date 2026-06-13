@@ -17,6 +17,13 @@ class TimeBot(commands.Bot):
         self.active_clocks = {}
 
     async def setup_hook(self):
+        # Force Syncing commands globally right here on boot
+        try:
+            synced = await self.tree.sync()
+            print(f"🔄 Successfully synchronized {len(synced)} slash commands globally via setup_hook.")
+        except Exception as e:
+            print(f"⚠️ Failed to sync commands: {e}")
+
         # Start the background editing loop task
         self.update_clocks_loop.start()
 
@@ -105,9 +112,6 @@ async def on_ready():
     
     # 💾 BOOT CHECK: Automatically scan existing channels so the loop resumes monitoring them if the bot restarts!
     try:
-        synced = await bot.tree.sync()
-        print(f"Successfully synced {len(synced)} slash commands globally!")
-        
         for guild in bot.guilds:
             category = discord.utils.get(guild.categories, name=DASHBOARD_CATEGORY_NAME)
             if category:
@@ -185,23 +189,22 @@ async def timezone_autocomplete(interaction: discord.Interaction, current: str) 
     for label in TIMEZONE_MAP.keys():
         if current.lower() in label.lower():
             choices.append(app_commands.Choice(name=label, value=label))
-    
-    # Discord autocompletes can return up to 25 items at once
     return choices[:25]
 
 
 # 📄 COMMAND 2: Public Interactive Verification Command
 @bot.tree.command(name="verify", description="Onboard by choosing your country location and matching UTC offset.")
 @app_commands.describe(timezone="Type your country name or offset value (e.g. UTC+8)")
-@app_commands.autocomplete(timezone=timezone_autocomplete)  # ✨ This links the autocomplete logic
+@app_commands.autocomplete(timezone=timezone_autocomplete)
 async def verify(interaction: discord.Interaction, timezone: str):
-    user = interaction.user
     guild = interaction.guild
+    # Ensure the user is handled specifically as a server Member object
+    member = interaction.user if isinstance(interaction.user, discord.Member) else await guild.fetch_member(interaction.user.id)
 
     unverified_role = discord.utils.get(guild.roles, name=UNVERIFIED_ROLE_NAME)
     verified_role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
 
-    if not unverified_role or unverified_role not in user.roles:
+    if not unverified_role or unverified_role not in member.roles:
         await interaction.response.send_message("❌ This command is reserved for unverified developers.", ephemeral=True)
         return
 
@@ -215,36 +218,40 @@ async def verify(interaction: discord.Interaction, timezone: str):
     if not category:
         category = await guild.create_category(DASHBOARD_CATEGORY_NAME)
 
-    clean_name = user.name.lower().replace(" ", "-")
+    clean_name = member.name.lower().replace(" ", "-")
     channel_name = f"🕒-{clean_name}-time"
     
+    # 🔒 PERMISSION OVERRIDES: Block access to public (@everyone), grant access only to verified developers
     overwrites = {
-        guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
-        unverified_role: discord.PermissionOverwrite(read_messages=False)
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        verified_role: discord.PermissionOverwrite(view_channel=True, send_messages=False)
     }
 
     iana_tz = TIMEZONE_MAP[timezone]
 
-    # Create the text channel and store the timezone configuration directly in the channel metadata topic
+    # Create the text channel with restricted visibility
     timezone_channel = await guild.create_text_channel(
         name=channel_name,
         category=category,
         overwrites=overwrites,
-        topic=f"Timezone: {iana_tz} | Assigned User: {user.name}"
+        topic=f"Timezone: {iana_tz} | Assigned User: {member.name}"
     )
 
-    # Register this channel in the active clock dictionary for the background loop to catch
+    # Register this channel in the active clock dictionary
     bot.active_clocks[timezone_channel.id] = iana_tz
 
-    # Send the initial message and PIN it (the background loop looks for the first pinned message to rewrite)
-    initial_msg = await timezone_channel.send(f"⏳ Syncing clock for {user.mention}...")
+    # Send initial message and pin it
+    initial_msg = await timezone_channel.send(f"⏳ Syncing clock for {member.mention}...")
     await initial_msg.pin()
 
-    # Role update mechanics
-    if unverified_role in user.roles:
-        await user.remove_roles(unverified_role)
-    if verified_role:
-        await user.add_roles(verified_role)
+    # 🔄 ROLE UPDATE MECHANICS
+    try:
+        if unverified_role in member.roles:
+            await member.remove_roles(unverified_role)
+        if verified_role:
+            await member.add_roles(verified_role)
+    except discord.Forbidden:
+        print(f"❌ Error: Bot hierarchy profile is below the target roles. Drag the bot's role HIGHER in your server integration settings!")
 
     await interaction.followup.send(
         f"✅ Verification complete! Your personal clock dashboard has been created here: {timezone_channel.mention}", 
