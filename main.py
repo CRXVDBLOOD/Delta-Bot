@@ -67,7 +67,7 @@ class TimeBot(commands.Bot):
 
 bot = TimeBot()
 
-# --- CONFIGURATION (Ensure these match your exact server setup) ---
+# --- CONFIGURATION (Ensure these match your exact server setup case-sensitively!) ---
 UNVERIFIED_ROLE_NAME = "unverifiedeveloper"
 VERIFIED_ROLE_NAME = "developer"
 ADMIN_ROLE_NAME = "Master Administrator"
@@ -204,7 +204,15 @@ async def verify(interaction: discord.Interaction, timezone: str):
     unverified_role = discord.utils.get(guild.roles, name=UNVERIFIED_ROLE_NAME)
     verified_role = discord.utils.get(guild.roles, name=VERIFIED_ROLE_NAME)
 
-    if not unverified_role or unverified_role not in member.roles:
+    # 🛑 CRITICAL SAFETY CHECK: Stop early if roles are missing from the server settings completely
+    if not unverified_role or not verified_role:
+        await interaction.response.send_message(
+            f"❌ Server configuration error. Make sure both `{UNVERIFIED_ROLE_NAME}` and `{VERIFIED_ROLE_NAME}` exist in your server settings exactly as written.",
+            ephemeral=True
+        )
+        return
+
+    if unverified_role not in member.roles:
         await interaction.response.send_message("❌ This command is reserved for unverified developers.", ephemeral=True)
         return
 
@@ -248,10 +256,14 @@ async def verify(interaction: discord.Interaction, timezone: str):
     try:
         if unverified_role in member.roles:
             await member.remove_roles(unverified_role)
-        if verified_role:
-            await member.add_roles(verified_role)
+        await member.add_roles(verified_role)
     except discord.Forbidden:
         print(f"❌ Error: Bot hierarchy profile is below the target roles. Drag the bot's role HIGHER in your server integration settings!")
+        await interaction.followup.send(
+            "⚠️ Channel created, but I couldn't update your roles. Please contact an Administrator to adjust my role position hierarchy!",
+            ephemeral=True
+        )
+        return
 
     await interaction.followup.send(
         f"✅ Verification complete! Your personal clock dashboard has been created here: {timezone_channel.mention}", 
