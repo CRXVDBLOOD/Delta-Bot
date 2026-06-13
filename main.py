@@ -117,7 +117,7 @@ async def on_ready():
                         if pins:
                             # Read what timezone was assigned from the footer text line
                             for label, iana in TIMEZONE_MAP.items():
-                                if iana in channel.topic or label in channel.topic:
+                                if channel.topic and (iana in channel.topic or label in channel.topic):
                                     bot.active_clocks[channel.id] = iana
                                     break
                             if channel.id not in bot.active_clocks:
@@ -131,7 +131,7 @@ def is_master_admin():
         admin_role = discord.utils.get(interaction.user.roles, name=ADMIN_ROLE_NAME)
         if admin_role is not None:
             return True
-        raise app_commands.errors.MissingRole(ADMIN_ROLE_NAME)
+        raise app_commands.errors.MissingRole([ADMIN_ROLE_NAME])
     return app_commands.checks.check(predicate)
 
 
@@ -217,3 +217,32 @@ async def verify(interaction: discord.Interaction, timezone: str):
     timezone_channel = await guild.create_text_channel(
         name=channel_name,
         category=category,
+        overwrites=overwrites,
+        topic=f"Timezone: {iana_tz} | Assigned User: {user.name}"
+    )
+
+    # Register this channel in the active clock dictionary for the background loop to catch
+    bot.active_clocks[timezone_channel.id] = iana_tz
+
+    # Send the initial message and PIN it (the background loop looks for the first pinned message to rewrite)
+    initial_msg = await timezone_channel.send(f"⏳ Syncing clock for {user.mention}...")
+    await initial_msg.pin()
+
+    # Role update mechanics
+    if unverified_role in user.roles:
+        await user.remove_roles(unverified_role)
+    if verified_role:
+        await user.add_roles(verified_role)
+
+    await interaction.followup.send(
+        f"✅ Verification complete! Your personal clock dashboard has been created here: {timezone_channel.mention}", 
+        ephemeral=True
+    )
+
+
+# --- BOT EXECUTION ---
+TOKEN = os.getenv("DISCORD_TOKEN")
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("Fatal Error: No token found. Please set the DISCORD_TOKEN environment variable.")
