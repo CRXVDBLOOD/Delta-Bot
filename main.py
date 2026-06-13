@@ -99,9 +99,18 @@ class TimeBot(commands.Bot):
             except Exception as e:
                 print(f"Error executing embed modification cycle loop: {e}")
 
+    # ⏱️ WALL-CLOCK SYNCHRONIZER
     @update_clocks_loop.before_loop
     async def before_update_clocks_loop(self):
         await self.wait_until_ready()
+        
+        # Calculate exactly how many seconds remain until the next clean real-world minute rollover (:00)
+        now = datetime.now()
+        seconds_until_next_minute = 60 - now.second - (now.microsecond / 1000000.0)
+        
+        print(f"⏱️ Time Sync: Waiting {round(seconds_until_next_minute, 2)}s to align perfectly with the top of the minute...")
+        await asyncio.sleep(seconds_until_next_minute)
+        print("⏱️ Time Sync: Successfully locked onto atomic wall-clock intervals!")
 
 bot = TimeBot()
 
