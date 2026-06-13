@@ -115,7 +115,7 @@ async def on_ready():
                     if channel.name.startswith("🕒-") and channel.name.endswith("-time"):
                         pins = await channel.pins()
                         if pins:
-                            # Read what timezone was assigned from the footer text line
+                            # Read what timezone was assigned from the channel topic
                             for label, iana in TIMEZONE_MAP.items():
                                 if channel.topic and (iana in channel.topic or label in channel.topic):
                                     bot.active_clocks[channel.id] = iana
@@ -172,16 +172,28 @@ async def setup_verification(interaction: discord.Interaction):
         ),
         color=discord.Color.blue()
     )
-    embed.add_field(name="How to verify:", value="Type `/verify` in your chat box, click the command, select your global location from the dropdown menu, and press Enter!", inline=False)
+    embed.add_field(name="How to verify:", value="Type `/verify` in your chat box, click the command, select your global location from the menu, and press Enter!", inline=False)
     embed.set_footer(text="Automated Developer Gatekeeper System")
 
     await verify_channel.send(embed=embed)
     await interaction.followup.send(f"✅ Onboarding framework deployed successfully! The gate channel is live at: {verify_channel.mention}", ephemeral=True)
 
 
+# 🔍 AUTOCOMPLETE AUTO-SUGGEST LOGIC
+async def timezone_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    choices = []
+    for label in TIMEZONE_MAP.keys():
+        if current.lower() in label.lower():
+            choices.append(app_commands.Choice(name=label, value=label))
+    
+    # Discord autocompletes can return up to 25 items at once
+    return choices[:25]
+
+
 # 📄 COMMAND 2: Public Interactive Verification Command
 @bot.tree.command(name="verify", description="Onboard by choosing your country location and matching UTC offset.")
 @app_commands.describe(timezone="Type your country name or offset value (e.g. UTC+8)")
+@app_commands.autocomplete(timezone=timezone_autocomplete)  # ✨ This links the autocomplete logic
 async def verify(interaction: discord.Interaction, timezone: str):
     user = interaction.user
     guild = interaction.guild
@@ -194,7 +206,7 @@ async def verify(interaction: discord.Interaction, timezone: str):
         return
 
     if timezone not in TIMEZONE_MAP:
-        await interaction.response.send_message("❌ Configuration error. Please select an option directly from the drop-down choice list!", ephemeral=True)
+        await interaction.response.send_message("❌ Configuration error. Please select an option directly from the auto-suggested list!", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
