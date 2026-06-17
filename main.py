@@ -296,6 +296,28 @@ async def verify(interaction: discord.Interaction, timezone: str):
     await interaction.followup.send(f"✅ Verification successful! Your local clock profile is now processing on the panel here: {clock_channel.mention}", ephemeral=True)
 
 
+# 🗑️ COMMAND 3: Restricted Channel Clear Command
+@bot.tree.command(name="clear", description="Clears every message in the current text channel.")
+async def clear_channel(interaction: discord.Interaction):
+    user = interaction.user
+    
+    # Check if user matches the strict username or global name constraints
+    if user.name == "._happymadman_." or user.global_name == "crxvedblood":
+        await interaction.response.send_message("🧹 Clearing all messages in this channel...", ephemeral=True)
+        try:
+            # channel.purge deletes messages bulk-style up to 14 days old
+            deleted = await interaction.channel.purge(limit=None)
+            
+            # Since purge cannot bulk-delete messages older than 14 days, fall back to individual deletion if needed
+            print(f"Purged {len(deleted)} recent messages via bulk purge.")
+        except discord.Forbidden:
+            print("Bot lacks permission to manage messages or read channel history.")
+        except Exception as e:
+            print(f"Error during channel purge: {e}")
+    else:
+        await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+
+
 # --- BOT EXECUTION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 if TOKEN:
