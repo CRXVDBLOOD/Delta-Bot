@@ -1,7 +1,6 @@
 import os
 import asyncio
-import json
-from datetime import datetime, timedelta
+from datetime import datetime
 import zoneinfo
 import discord
 from discord import app_commands
@@ -16,13 +15,8 @@ class TimeBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         # Dictionary tracking active users: {user_id: timezone_string}
         self.active_clocks = {}
-        # Set to hold processed bad words dynamically pulled from local file
-        self.banned_words = set()
 
     async def setup_hook(self):
-        # Fetch the cuss words locally on startup
-        self.load_banned_words()
-
         # Force Syncing commands globally right here on boot
         try:
             synced = await self.tree.sync()
@@ -32,69 +26,6 @@ class TimeBot(commands.Bot):
 
         # Start the background editing loop task
         self.update_clocks_loop.start()
-
-    def load_banned_words(self):
-        """Pulls banned words list directly from the local cussword.js file next to main.py"""
-        try:
-            if os.path.exists("cussword.js"):
-                with open("cussword.js", "r", encoding="utf-8") as f:
-                    text_data = f.read()
-                
-                # Isolates JSON array contents if it contains JavaScript variable wrappers
-                start_idx = text_data.find("[")
-                end_idx = text_data.rfind("]") + 1
-                
-                if start_idx != -1 and end_idx != -1:
-                    json_array = text_data[start_idx:end_idx]
-                    words = json.loads(json_array)
-                    # Convert everything to lowercase for case-insensitive protection
-                    self.banned_words = {str(word).strip().lower() for word in words}
-                    print(f"🛡️ Automod loaded: Sync'd {len(self.banned_words)} phrases from local cussword.js successfully.")
-                else:
-                    print("⚠️ Failed parsing cussword.js: JSON brackets '[ ]' could not be found.")
-            else:
-                print("⚠️ cussword.js file not found next to main.py")
-        except Exception as e:
-            print(f"⚠️ Error reading local cuss words file: {e}")
-
-    # --- AUTO-MODERATION ON MESSAGE EVENT TRIGGER ---
-    async def on_message(self, message: discord.Message):
-        # Prevent checking messages sent by the bot itself or system DMs
-        if message.author.bot or not message.guild:
-            return
-
-        content_lower = message.content.lower()
-        triggered_word = None
-
-        # Inspect if any bad phrases are caught inside the payload text
-        for word in self.banned_words:
-            if word in content_lower:
-                triggered_word = word
-                break
-
-        if triggered_word:
-            try:
-                # 1. Delete offending chat message
-                await message.delete()
-
-                warn_text = f"⚠️ {message.author.mention}, your message contained filtered language and was deleted."
-
-                # 2. Process optional timeout penalty if flag is active
-                if TIMEOUT_ENABLED:
-                    duration = timedelta(seconds=TIMEOUT_DURATION_SECONDS)
-                    await message.author.timeout(duration, reason=f"Triggered language filter matching phrase: '{triggered_word}'")
-                    warn_text += f" You have been timed out for {TIMEOUT_DURATION_SECONDS} seconds."
-
-                await message.channel.send(warn_text, delete_after=10)
-            except discord.Forbidden:
-                print("⚠️ Bot lacks administrative permission to delete messages or issue timeouts.")
-            except Exception as e:
-                print(f"⚠️ Automod processing error: {e}")
-            return  # Stop execution processing chain immediately
-
-        # Ensure standard prefix-commands function smoothly alongside automod
-        await self.process_commands(message)
-
 
     # 🔄 BACKGROUND TASK: Edits existing embeds in-place every 1 minute
     @tasks.loop(minutes=1)
@@ -189,10 +120,6 @@ VERIFIED_ROLE_NAME = "Developer"
 ADMIN_ROLE_NAME = "Master Administrator"
 VERIFY_CHANNEL_NAME = "verify-here"
 CLOCK_CHANNEL_NAME = "developer-clocks"  # Shared text dashboard location
-
-# --- AUTOMOD MODERATION CONFIGURATION ---
-TIMEOUT_ENABLED = True                      # Set to False if you only want deletion without timeout punishment
-TIMEOUT_DURATION_SECONDS = 60               # Adjust how many seconds the user gets muted/timed out
 
 # --- EXTENDED GLOBAL TIMEZONE DATABASE ---
 TIMEZONE_MAP = {
